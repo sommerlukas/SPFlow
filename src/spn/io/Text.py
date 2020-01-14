@@ -108,12 +108,80 @@ def add_str_to_spn(name, lambda_func, grammar, obj_type):
     _str_to_spn[name] = (lambda_func, grammar, obj_type)
 
 
-def str_to_spn(text, features=None, str_to_spn_lambdas=_str_to_spn):
+def tree_to_spn(tree, features, str_to_spn_lambdas=_str_to_spn, str_to_spn_mode=0, spn_nodes=None):
+    tnode = tree.data
+    allowed_node_exceptions = ["list", "featurelist"]
+
+    if tnode == "sumnode":
+        node = Sum()
+
+        if str_to_spn_mode == 0:
+            children = tree.children
+            for i in range(int(len(children) / 2)):
+                j = 2 * i
+                w, c = float(children[j]), tree.children[j + 1]
+                node.weights.append(w)
+                node.children.append(tree_to_spn(c, features))
+        else:
+            children = tree.children[1:]
+            # In addition to weight and node there is an additional parsed name, hence divide by 3
+            for i in range(int(len(children) / 3)):
+                j = 2 * i
+                w, c = float(children[j]), str(children[j + 1])
+                node.weights.append(w)
+                node.children.append(spn_nodes[c])
+
+            spn_nodes[tree.children[0]] = node
+
+        return node
+
+    if tnode == "prodnode":
+        node = Product()
+
+        if str_to_spn_mode == 0:
+            if len(tree.children) == 1:
+                return tree_to_spn(tree.children[0], features)
+            for c in tree.children:
+                node.children.append(tree_to_spn(c, features))
+        else:
+            # Ignore first child (PARAMNAME; e.g. "ProductNode_1") -- hence (len - 1) and (1 +)
+            # The other children are PARAMNAMEs and their respective parse trees -- hence, divide by two
+            for i in range(1, int(1 + (len(tree.children) - 1) / 2)):
+                node.children.append(spn_nodes[tree.children[i]])
+            spn_nodes[tree.children[0]] = node
+
+        return node
+
+    if tnode in str_to_spn_lambdas:
+        node = str_to_spn_lambdas[tnode][0](tree, features, str_to_spn_lambdas[tnode][2], tree_to_spn)
+        if str_to_spn_mode == 1:
+            spn_nodes[tree.children[0]] = node
+        return node
+
+    elif tnode not in allowed_node_exceptions:
+        raise Exception("Node type not registered: " + tnode)
+
+
+def str_to_spn(text, features=None, str_to_spn_lambdas=_str_to_spn, str_to_spn_mode=0):
     from lark import Lark
 
     ext_name = "\n".join(map(lambda s: "    | " + s, str_to_spn_lambdas.keys()))
 
     ext_grammar = "\n".join([s for _, s, _ in str_to_spn_lambdas.values()])
+
+    # str_to_spn_mode determines which string representation shall be converted to a SPN.
+    # 0: String Equation
+    # 1: String Reference Graph
+    if str_to_spn_mode == 0:
+        n_prod = r"""prodnode: "(" [node ("*" node)*] ")" """
+        n_sum = r"""sumnode: "(" [NUMBERS "*" node ("+" NUMBERS "*" node)*] ")" """
+        ext_grammar = "\n{}\n{}\n{}".format(n_sum, n_prod, ext_grammar)
+    else:
+        n_prod = r"""prodnode: PARAMNAME "ProductNode" "(" PARAMNAME ("," PARAMNAME)* ")" "{" node* "}" featurelist? """
+        n_sum = r"""sumnode: PARAMNAME "SumNode" "(" NUMBERS "*" PARAMNAME """ + \
+                r"""("," NUMBERS "*" PARAMNAME)* ")" "{" node* "}" featurelist? """
+        # Other nodes' grammar (currently) only differs w.r.t. to an additional "PARAMNAME"
+        ext_grammar = "\n{}\n{}\n{}".format(n_sum, n_prod, str(ext_grammar).replace(":", ": PARAMNAME"))
 
     grammar = (
         r"""
@@ -128,18 +196,12 @@ PARAMCHARS: ALPHANUM|"_"
 FNAME: ALPHANUM+
 PARAMNAME: PARAMCHARS+
 list: "[" [NUMBERS ("," NUMBERS)*] "]"
-
+featurelist: "#" PARAMNAME (";" PARAMNAME)*
 
 ?node: prodnode
     | sumnode
 """
         + ext_name
-        + r"""
-
-prodnode: "(" [node ("*" node)*] ")"
-sumnode: "(" [NUMBERS "*" node ("+" NUMBERS "*" node)*] ")"
-
-"""
         + ext_grammar
     )
 
@@ -147,32 +209,23 @@ sumnode: "(" [NUMBERS "*" node ("+" NUMBERS "*" node)*] ")"
     # logger.info(grammar)
     tree = parser.parse(text)
 
-    def tree_to_spn(tree, features):
-        tnode = tree.data
+    if str_to_spn_mode == 1 and features is None and tree.children[-1].data == "featurelist":
+        features = []
+        for token in tree.children[-1].children:
+            features.append(str(token))
 
-        if tnode == "sumnode":
-            node = Sum()
-            for i in range(int(len(tree.children) / 2)):
-                j = 2 * i
-                w, c = tree.children[j], tree.children[j + 1]
-                node.weights.append(float(w))
-                node.children.append(tree_to_spn(c, features))
-            return node
+    if str_to_spn_mode == 0:
+        spn = tree_to_spn(tree, features)
+    else:
+        # This dict will be filled with each single node of the SPN
+        spn_nodes = {}
+        # Process the parse-tree bottom-up (DFS post-order)
+        # This prevents encountering unknown / not yet defined nodes
+        for subtree in tree.iter_subtrees():
+            tree_to_spn(subtree, features, str_to_spn_lambdas, 1, spn_nodes)
 
-        if tnode == "prodnode":
-            if len(tree.children) == 1:
-                return tree_to_spn(tree.children[0], features)
-            node = Product()
-            for c in tree.children:
-                node.children.append(tree_to_spn(c, features))
-            return node
-
-        if tnode in str_to_spn_lambdas:
-            return str_to_spn_lambdas[tnode][0](tree, features, str_to_spn_lambdas[tnode][2], tree_to_spn)
-
-        raise Exception("Node type not registered: " + tnode)
-
-    spn = tree_to_spn(tree, features)
+        # Lookup the root node (i.e. the SPN) using its name
+        spn = spn_nodes[str(tree.children[0])]
 
     assign_ids(spn)
     rebuild_scopes_bottom_up(spn)
