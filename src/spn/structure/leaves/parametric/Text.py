@@ -5,6 +5,7 @@ Created on March 21, 2018
 """
 from spn.io.Text import add_str_to_spn, add_node_to_str
 from collections import OrderedDict
+from lark.lexer import Token
 import inspect
 
 from spn.structure.leaves.parametric.Parametric import Parametric, Categorical
@@ -53,7 +54,12 @@ def parametric_tree_to_spn(tree, features, obj_type, tree_to_spn):
 
 
 def categorical_tree_to_spn(tree, features, obj_type, tree_to_spn):
-    params = tree.children[1:]
+    index_shift = 0
+    # If first child is a Node-Name (e.g. 'CategoricalNode_1'), the first index is being ignored
+    if type(tree.children[0]) is Token and tree.children[0].type == "PARAMNAME":
+        index_shift = 1
+
+    params = tree.children[1 + index_shift:]
 
     init_params = OrderedDict()
     for p, v in zip(params[::2], params[1::2]):
@@ -68,7 +74,7 @@ def categorical_tree_to_spn(tree, features, obj_type, tree_to_spn):
         init_params[str(p)] = val
     node = obj_type(**init_params)
 
-    feature = str(tree.children[0])
+    feature = str(tree.children[0 + index_shift])
 
     if features is not None:
         node.scope.append(features.index(feature))

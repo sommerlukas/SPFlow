@@ -8,6 +8,7 @@ import ast
 from spn.io.Text import spn_to_str_equation
 from spn.io.Text import add_str_to_spn, add_node_to_str
 from collections import OrderedDict
+from lark.lexer import Token
 import inspect
 import numpy as np
 
@@ -35,36 +36,32 @@ def histogram_to_str(node, feature_names=None, node_to_str=None):
         # formatter={"float_kind": lambda x: "%.10f" % x},
     )
 
-    return "Histogram(%s|%s;%s)" % (fname, breaks, densities)
-    # ToDo: Revert ASAP -- Output of 'bin_repr_points' has been suppressed to be supported by SPNC. (2019-DEC-10)
-    # return "Histogram(%s|%s;%s;%s)" % (fname, breaks, densities, bin_repr_points)
+    return "Histogram(%s|%s;%s;%s)" % (fname, breaks, densities, bin_repr_points)
 
 
 def histogram_tree_to_spn(tree, features, obj_type, tree_to_spn):
-    # ToDo: Revert ASAP -- Parse-Tree structure has been changed for now; forced alternate processing. (2020-JAN-13)
-    # Revert by removing True-branch, but note that it might be necessary to account for other grammar changes.
-    if True:
-        if len(tree.children) < 4:
-            # Case: equation string to SPN
-            breaks = list(map(ast.literal_eval, tree.children[1].children))
-            densities = list(map(ast.literal_eval, tree.children[2].children))
-            feature = str(tree.children[0])
-        else:
-            # Case: str-ref-graph to SPN
-            # Since we use one function for equation and str_ref_graph conversion, there is an index shift
-            # Caused by modifying the grammar w.r.t. the additional PARAMNAME e.g. "HistogramNode_1" (tree.children[0])
-            breaks = list(map(ast.literal_eval, tree.children[2].children))
-            densities = list(map(ast.literal_eval, tree.children[3].children))
-            feature = str(tree.children[1])
-        maxx = breaks[0]
-        minx = breaks[-1]
-        # ToDo: bin_repr_points is probably not generated correctly. Confirmation and/or fix needed. (2020-JAN-13)
-        bin_repr_points = np.array([minx + (maxx - minx) / 2])
+    # Note: tree.children consists of 1 or 2 Tokens (Node-Name [PARAMNAME], Feature-Name [FNAME])
+    # followed by 2 or 3 Trees (breaks, densities, bin_repr_points)
+    # If first child is a Node-Name (e.g. 'HistogramNode_1'), the first index is being ignored
+    index_shift = 0
+    if type(tree.children[0]) is Token and tree.children[0].type == "PARAMNAME":
+        index_shift = 1
+
+    # We may assume there are at least two Trees
+    feature = str(tree.children[index_shift])
+    breaks = list(map(ast.literal_eval, tree.children[1 + index_shift].children))
+    densities = list(map(ast.literal_eval, tree.children[2 + index_shift].children))
+
+    # Check if there is a third Tree (i.e. 'bin_repr_points' is available)
+    tree_count = len(tree.children) - index_shift - 1
+    if tree_count == 3:
+        bin_repr_points = list(map(ast.literal_eval, tree.children[3 + index_shift].children))
     else:
-        breaks = list(map(ast.literal_eval, tree.children[1].children))
-        densities = list(map(ast.literal_eval, tree.children[2].children))
-        bin_repr_points = list(map(ast.literal_eval, tree.children[3].children))
-        feature = str(tree.children[0])
+        # ToDo: bin_repr_points might not generated correctly. Confirmation and/or fix needed. (2020-JAN-16)
+        # 'bin_repr_points' is not available, reconstruct it
+        bin_repr_points = ((breaks + np.roll(breaks, -1)) / 2.0)[:-1]
+        # Default is MetaType.DISCRETE, hence set type to 'int' and finally store as list
+        bin_repr_points = bin_repr_points.astype(int).tolist()
 
     node = Histogram(breaks, densities, bin_repr_points)
 
@@ -82,7 +79,7 @@ def add_histogram_text_support():
     add_str_to_spn(
         "histogram",
         histogram_tree_to_spn,
-        # ToDo: Revert ASAP -- Grammar change: 'bin_repr_points' / 3rd list has been marked optional. (2020-JAN-13)
+        # Grammar change (legacy support): 'bin_repr_points' / 3rd list has been marked optional. (2020-JAN-13)
         """
                    histogram: "Histogram(" FNAME "|" list ";" list (";" list)? ")"  """,
         None,
