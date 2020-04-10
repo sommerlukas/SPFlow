@@ -6,6 +6,7 @@ import spn.experiments.RandomSPNs.region_graph as region_graph
 
 import spn.algorithms.Inference as inference
 import spn.io.Graphics as graphics
+from spn.experiments.RandomSPNs.RAT_SPN_v2 import compute_performance
 
 
 def one_hot(vector):
@@ -28,13 +29,13 @@ def load_mnist():
 
 
 def train_spn(spn, train_im, train_lab=None, num_epochs=50, batch_size=100, sess=tf.compat.v1.Session()):
-
     input_ph = tf.compat.v1.placeholder(tf.float32, [batch_size, train_im.shape[1]])
     label_ph = tf.compat.v1.placeholder(tf.int32, [batch_size])
     marginalized = tf.zeros_like(input_ph)
     spn_output = spn.forward(input_ph, marginalized)
     if train_lab is not None:
-        disc_loss = tf.reduce_mean(input_tensor=tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label_ph, logits=spn_output))
+        disc_loss = tf.reduce_mean(
+            input_tensor=tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label_ph, logits=spn_output))
         label_idx = tf.stack([tf.range(batch_size), label_ph], axis=1)
         gen_loss = tf.reduce_mean(input_tensor=-1 * tf.gather_nd(spn_output, label_idx))
     very_gen_loss = -1 * tf.reduce_mean(input_tensor=tf.reduce_logsumexp(input_tensor=spn_output, axis=1))
@@ -49,8 +50,8 @@ def train_spn(spn, train_im, train_lab=None, num_epochs=50, batch_size=100, sess
     for i in range(num_epochs):
         num_correct = 0
         for j in range(batches_per_epoch):
-            im_batch = train_im[j * batch_size : (j + 1) * batch_size, :]
-            label_batch = train_lab[j * batch_size : (j + 1) * batch_size]
+            im_batch = train_im[j * batch_size: (j + 1) * batch_size, :]
+            label_batch = train_lab[j * batch_size: (j + 1) * batch_size]
 
             _, cur_output, cur_loss = sess.run(
                 [train_op, spn_output, loss], feed_dict={input_ph: im_batch, label_ph: label_batch}
@@ -72,6 +73,8 @@ def softmax(x, axis=0):
 
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
     tf.compat.v1.disable_eager_execution()
     rg = region_graph.RegionGraph(range(28 * 28))
     # rg = region_graph.RegionGraph(range(3 * 3))
@@ -86,13 +89,17 @@ if __name__ == "__main__":
     print("num_params", spn.num_params())
 
     sess = tf.compat.v1.Session()
-    #sess.run(tf.compat.v1.global_variables_initializer())
+    # sess.run(tf.compat.v1.global_variables_initializer())
 
     (train_im, train_labels), _ = load_mnist()
-    train_spn(spn, train_im, train_labels, num_epochs=3, sess=sess)
+    train_spn(spn, train_im, train_labels, num_epochs=5, sess=sess)
 
     # dummy_input = np.random.normal(0.0, 1.2, [10, 9])
-    dummy_input = train_im[:5]
+    dummy_input = train_im
+    # print(dummy_input.shape)
+    # for im in dummy_input:
+    #    plt.imshow(im.reshape(28,28))
+    #    plt.show()
     input_ph = tf.compat.v1.placeholder(tf.float32, [None] + list(dummy_input.shape[1:]))
     output_tensor = spn.forward(input_ph)
     tf_output = sess.run(output_tensor, feed_dict={input_ph: dummy_input})
@@ -104,9 +111,20 @@ if __name__ == "__main__":
     # graphics.plot_spn2(output_nodes[0])
     # graphics.plot_spn_to_svg(output_nodes[0])
     simple_output = np.stack(simple_output, axis=-1)
-    #print(tf_output, simple_output)
+    # print(tf_output, simple_output)
     simple_output = softmax(simple_output, axis=1)
     tf_output = softmax(tf_output, axis=1) + 1e-100
-    #print(tf_output, simple_output)
+    # print(tf_output, simple_output)
+    print(tf_output.shape)
+    print(simple_output.shape)
     relative_error = np.abs(simple_output / tf_output - 1)
-    print("Average relative error",np.average(relative_error))
+    # i = 0
+    # for tf, simple in zip(tf_output, simple_output):
+    #     print('tf_output:', tf[train_labels[i] - 1])
+    #     print('simple_output:', simple[train_labels[i] - 1])
+    #     print('label:', train_labels[i])
+    #     i += 1
+    print("Average relative error", np.average(relative_error))
+
+    accuracy = compute_performance(sess=sess, data_x=train_im, data_labels=train_labels, batch_size=5, spn=spn)
+    print("Accuracy:", accuracy)

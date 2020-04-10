@@ -1,15 +1,13 @@
+import time
+
+import tensorflow_probability as tfp
 import numpy as np
 import tensorflow as tf
-import spn.structure.Base as base
-import spn.structure.leaves.parametric.Parametric as para
-
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
-from tensorflow.python.ops.distributions import normal
-from tensorflow.python.ops.distributions import bernoulli
-from tensorflow.python.ops.distributions import categorical
 
-import time
+import spn.structure.Base as base
+import spn.structure.leaves.parametric.Parametric as para
 
 
 def add_to_map(given_map, key, item):
@@ -49,7 +47,8 @@ def bernoulli_variable_with_weight_decay(name, shape, wd, p=-0.7, values=None):
 
 def print_if_nan(tensor, msg):
     is_nan = tf.reduce_any(input_tensor=tf.math.is_nan(tensor))
-    return tf.cond(pred=is_nan, true_fn=lambda: tf.compat.v1.Print(tensor, [is_nan], message=msg), false_fn=lambda: tf.identity(tensor))
+    return tf.cond(pred=is_nan, true_fn=lambda: tf.compat.v1.Print(tensor, [is_nan], message=msg),
+                   false_fn=lambda: tf.identity(tensor))
 
 
 class NodeVector(object):
@@ -119,7 +118,7 @@ class GaussVector(NodeVector):
         else:
             self.sigma = 1.0
 
-        self.dist = normal.Normal(self.means, tf.sqrt(self.sigma))
+        self.dist = tfp.distributions.Normal(self.means, tf.sqrt(self.sigma))
 
     def forward(self, inputs, marginalized=None):
         local_inputs = tf.gather(inputs, self.scope, axis=1)
@@ -173,7 +172,7 @@ class BernoulliVector(NodeVector):
             values=given_params,
         )
 
-        self.dist = bernoulli.Bernoulli(logits=self.probs)
+        self.dist = tfp.distributions.Bernoulli(logits=self.probs)
 
     def forward(self, inputs, marginalized=None, classes=False):
         local_inputs = tf.gather(inputs, self.scope, axis=1)
@@ -316,7 +315,7 @@ class SumVector(NodeVector):
     def sample(self, inputs, seed=None):
         inputs = tf.concat(inputs, 2)
         logits = tf.transpose(a=self.weights[0])
-        dist = categorical.Categorical(logits=logits)
+        dist = tfp.distributions.Categorical(logits=logits)
 
         indices = dist.sample([inputs.shape[0]], seed=seed)
         indices = tf.reshape(tf.tile(indices, [1, inputs.shape[1]]), [inputs.shape[0], self.size, inputs.shape[1]])
@@ -335,7 +334,8 @@ class SumVector(NodeVector):
 
 class RatSpn(object):
     def __init__(
-        self, num_classes, region_graph=None, vector_list=None, args=SpnArgs(), name=None, mean=0.0, p=-0.7, sess=None
+            self, num_classes, region_graph=None, vector_list=None, args=SpnArgs(), name=None, mean=0.0, p=-0.7,
+            sess=None
     ):
         if name is None:
             name = str(id(self))
@@ -626,23 +626,28 @@ class RatSpn(object):
 def compute_performance(sess, data_x, data_labels, batch_size, spn):
     """Compute classification accuracy"""
 
+    input_ph = tf.compat.v1.placeholder(tf.float32, [None] + list(data_x.shape[1:]))
+    output_tensor = spn.forward(input_ph)
+
+    label_ph = tf.compat.v1.placeholder(tf.int32, [batch_size])
+
     num_batches = int(np.ceil(float(data_x.shape[0]) / float(batch_size)))
     test_idx = 0
     num_correct = 0
 
     for test_k in range(0, num_batches):
         if test_k + 1 < num_batches:
-            batch_data = data_x[test_idx : test_idx + batch_size, :]
-            batch_labels = data_labels[test_idx : test_idx + batch_size]
+            batch_data = data_x[test_idx: test_idx + batch_size, :]
+            batch_labels = data_labels[test_idx: test_idx + batch_size]
 
-        feed_dict = {spn.inputs: batch_data, spn.labels: batch_labels}
-        if spn.dropout_input_placeholder is not None:
-            feed_dict[spn.dropout_input_placeholder] = 1.0
-        for dropout_op in spn.dropout_layer_placeholders:
-            if dropout_op is not None:
-                feed_dict[dropout_op] = 1.0
+        feed_dict = {input_ph: batch_data, label_ph: batch_labels}
+        # if spn.dropout_input_placeholder is not None:
+        #   feed_dict[spn.dropout_input_placeholder] = 1.0
+        # for dropout_op in spn.dropout_layer_placeholders:
+        #   if dropout_op is not None:
+        #      feed_dict[dropout_op] = 1.0
 
-        spn_outputs = sess.run(spn.outputs, feed_dict=feed_dict)
+        spn_outputs = sess.run(output_tensor, feed_dict=feed_dict)
         max_output = np.argmax(spn_outputs, axis=1)
 
         num_correct_batch = np.sum(max_output == batch_labels)
