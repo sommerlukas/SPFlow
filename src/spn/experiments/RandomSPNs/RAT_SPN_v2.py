@@ -8,6 +8,7 @@ from tensorflow.python.ops import random_ops
 
 import spn.structure.Base as base
 import spn.structure.leaves.parametric.Parametric as para
+from spn.structure.leaves.histogram.Histograms import create_histogram_leaf
 
 
 def add_to_map(given_map, key, item):
@@ -386,7 +387,7 @@ class RatSpn(object):
                         sess.run(init_new_vars_op)
                         self.vector_list[0].append(bernoulli_vector)
                         node_to_vec[id(a_node)] = bernoulli_vector
-                    else:
+                    elif self.args.leaf == "gaussian":
                         name = "gauss_{}_{}".format(i, k)
                         gauss_vector = GaussVector(
                             scope,
@@ -401,6 +402,14 @@ class RatSpn(object):
                         sess.run(init_new_vars_op)
                         self.vector_list[0].append(gauss_vector)
                         node_to_vec[id(a_node)] = gauss_vector
+                    elif self.args.leaf == "histogram":
+                        name = "histogram_{}_{}".format(i, k)
+                        hist_vector = ...
+                        init_new_vars_op = tf.compat.v1.initializers.variables(..., name="init")
+                        sess.run(init_new_vars_op)
+                        self.vector_list[0].append(hist_vector)
+                        node_to_vec[id(a_node)] = hist_vector
+                        pass
 
         for layer_num, layer in enumerate(vector_list[1:]):
             self.vector_list.append([])
@@ -443,11 +452,16 @@ class RatSpn(object):
                 bernoulli_vector = BernoulliVector(leaf_region, self.args, name, p=self.default_param)
                 self.vector_list[-1].append(bernoulli_vector)
                 self._region_distributions[leaf_region] = bernoulli_vector
-            else:
+            elif self.args.leaf == "gaussian":
                 name = "gauss_{}".format(i)
                 gauss_vector = GaussVector(leaf_region, self.args, name, mean=self.default_mean)
                 self.vector_list[-1].append(gauss_vector)
                 self._region_distributions[leaf_region] = gauss_vector
+            elif self.args.leaf == "histogram":
+                name = "histogram_{}".format(i)
+                hist_vector = HistogramVector(leaf_region, self.args, name, ...)
+                self.vector_list[-1].append(hist_vector)
+                self._region_distributions[leaf_region] = hist_vector
 
         # make sum-product layers
         ps_count = 0
@@ -549,12 +563,16 @@ class RatSpn(object):
                         bernoulli = para.Bernoulli(p=normalized_p, scope=[r])
                         bernoulli.id = node_id = node_id + 1
                         prod.children.append(bernoulli)
-                    else:
+                    elif self.args.leaf == "gaussian":
                         means, sigmas = vec_to_params[leaf_vector]
                         stdevs = np.sqrt(sigmas) + np.zeros_like(means)  # Use broadcasting to expand stdev is necessary
                         gaussian = para.Gaussian(mean=means[j, i], stdev=stdevs[j, i], scope=[r])
                         gaussian.id = node_id = node_id + 1
                         prod.children.append(gaussian)
+                    elif self.args.leaf == "histogram":
+
+                        hist = create_histogram_leaf(...)
+                        prod.children.append(hist)
 
                 vec_to_nodes[leaf_vector].append(prod)
 
