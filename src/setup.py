@@ -22,7 +22,7 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url="https://github.com/alejandromolinaml/SPFlow",
     packages=setuptools.find_packages(),
-    package_data={"spn.algorithms.splitting": ["*.R"]},
+    package_data={"spn.algorithms.splitting": ["*.R"], "spn.io" : ["capnproto/*.capnp"]},
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: Apache Software License",

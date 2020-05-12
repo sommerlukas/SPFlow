@@ -1,5 +1,5 @@
 import logging
-import sys
+import os
 import numpy as np
 import capnp
 
@@ -10,8 +10,9 @@ from spn.structure.StatisticalTypes import Type, MetaType
 from spn.structure.leaves.histogram.Histograms import Histogram
 from spn.structure.leaves.parametric.Parametric import Gaussian
 
-sys.path.append("./capnproto")
-import spflow_capnp
+capnp.remove_import_hook()
+capnp_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "capnproto/spflow.capnp"))
+spflow_capnp = capnp.load(capnp_file)
 
 logger = logging.getLogger(__name__)
 
