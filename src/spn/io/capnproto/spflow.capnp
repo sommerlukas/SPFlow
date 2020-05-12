@@ -31,22 +31,23 @@ struct HistogramLeaf {
     binReprPoints @2 : List(Float64);
     type @3: SPFlowType;
     metaType @4: SPFlowMetaType;
+    scope @5 : Int32;
 }
 
 struct GaussianLeaf {
     mean @0 : Float64;
     stddev @1 : Float64;
+    scope @2 : Int32;
 }
 
 struct Node {
     id @0 : Int32;
-    scope @1 : List(Int32);
-    rootNode @4 : Bool = false;
+    rootNode @1 : Bool = false;
 
     union {
         product @2 : ProductNode;
         sum @3 : SumNode;
-        hist @5 : HistogramLeaf;
-        gaussian @6 : GaussianLeaf;
+        hist @4 : HistogramLeaf;
+        gaussian @5 : GaussianLeaf;
     }
 }

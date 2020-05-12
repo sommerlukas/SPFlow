@@ -1,16 +1,14 @@
-
-from spn.algorithms.Validity import is_valid
-from spn.structure.Base import Product, Sum, rebuild_scopes_bottom_up, assign_ids
-from spn.structure.leaves.parametric.Parametric import Categorical, Gaussian
-from spn.structure.leaves.histogram.Histograms import Histogram
-from spn.structure.StatisticalTypes import Type, MetaType
-from spn.io.Graphics import plot_spn
 import logging
-
-import os
 import sys
-
+import numpy as np
 import capnp
+
+from spn.io.Graphics import plot_spn
+from spn.structure.Base import Product, Sum, rebuild_scopes_bottom_up, assign_ids
+from spn.structure.StatisticalTypes import Type, MetaType
+from spn.structure.leaves.histogram.Histograms import Histogram
+from spn.structure.leaves.parametric.Parametric import Gaussian
+
 sys.path.append("./capnproto")
 import spflow_capnp
 
@@ -25,33 +23,43 @@ type2Enum = {Type.REAL : "real", Type.INTERVAL : "interval", Type.POSITIVE : "po
 
 enum2Type = {v : k for k, v in type2Enum.items()}
 
-def binary_serialize_product(product, file, is_rootNode):
+def unwrap_value(value):
+    # If the value was defined in the module numpy, convert it to a
+    # Python primitive type for serialization.
+    if type(value).__module__ == np.__name__:
+        return value.item()
+    return value
+
+def binary_serialize_product(product, file, is_rootNode, visited_nodes):
+    # Serialize child nodes before node itself
     for c in product.children:
-        binary_serialize(c, file, False)
+        binary_serialize(c, file, False, visited_nodes)
+    # Construct inner product node message.
     prod_msg = spflow_capnp.ProductNode.new_message()
     children = prod_msg.init("children", len(product.children))
     for i, child in enumerate(product.children):
         children[i] = child.id
+    # Construct surrounding node message
     node = spflow_capnp.Node.new_message()
     node.id = product.id
-    scope = node.init("scope", len(product.scope))
-    for i, v in enumerate(product.scope):
-        scope[i] = v
     node.product = prod_msg
     node.rootNode = is_rootNode
     node.write(file)
 
 def binary_deserialize_product(node, node_map):
     child_ids = node.product.children
+    # Resolve references to child nodes by ID.
     children = [node_map.get(id) for id in child_ids]
+    # TODO: Check all childs have been resolved.
     product = Product(children = children)
     product.id = node.id
-    product.scope = node.scope
     return product
 
-def binary_serialize_sum(sum, file, is_rootNode):
+def binary_serialize_sum(sum, file, is_rootNode, visited_nodes):
+    # Serialize child nodes before node itself
     for c in sum.children:
-        binary_serialize(c, file, False)
+        binary_serialize(c, file, False, visited_nodes)
+    # Construct innner sum node message
     sum_msg = spflow_capnp.SumNode.new_message()
     children = sum_msg.init("children", len(sum.children))
     for i, child in enumerate(sum.children):
@@ -59,60 +67,59 @@ def binary_serialize_sum(sum, file, is_rootNode):
     weights = sum_msg.init("weights", len(sum.weights))
     for i, w in enumerate(sum.weights):
         weights[i] = w
+    # Construct surrounding node message
     node = spflow_capnp.Node.new_message()
     node.id = sum.id
-    scope = node.init("scope", len(sum.scope))
-    for i, v in enumerate(sum.scope):
-        scope[i] = v
     node.sum = sum_msg
     node.rootNode = is_rootNode
     node.write(file)
 
 def binary_deserialize_sum(node, node_map):
     child_ids = node.sum.children
+    # Resolve references to child nodes by ID.
     children = [node_map.get(id) for id in child_ids]
+    # TODO: Check all childs have been resolved.
     sum = Sum(children = children, weights=node.sum.weights)
     sum.id = node.id
-    sum.scope = node.scope
     return sum
 
-def binary_serialize_gaussian(gauss, file, is_rootNode):
+def binary_serialize_gaussian(gauss, file, is_rootNode, visited_nodes):
+    # Construct inner Gaussian leaf message
     gauss_msg = spflow_capnp.GaussianLeaf.new_message()
-    gauss_msg.mean = gauss.mean
-    gauss_msg.stddev = gauss.stdev
+    gauss_msg.mean = unwrap_value(gauss.mean)
+    gauss_msg.stddev = unwrap_value(gauss.stdev)
+    # TODO: Check that scope is defined over a single variable
+    gauss_msg.scope = unwrap_value(gauss.scope[0])
+    # Construct surrounding node message.
     node = spflow_capnp.Node.new_message()
-    scope = node.init("scope", len(gauss.scope))
-    for i, v in enumerate(gauss.scope):
-        scope[i] = v
     node.gaussian = gauss_msg
     node.rootNode = is_rootNode
     node.id = gauss.id
     node.write(file)
 
 def binary_deserialize_gaussian(node, node_map):
-    mean = node.gaussian.mean
-    stdev = node.gaussian.stddev
-    gauss = Gaussian(mean, stdev, node.scope[0])
+    gauss = Gaussian(node.gaussian.mean, node.gaussian.stddev, node.gaussian.scope)
     gauss.id = node.id
     return gauss
 
-def binary_serialize_histogram(hist, file, is_rootNode):
+def binary_serialize_histogram(hist, file, is_rootNode, visited_nodes):
+    # Construct inner histogram leaf message.
     hist_msg = spflow_capnp.HistogramLeaf.new_message()
     breaks = hist_msg.init("breaks", len(hist.breaks))
     for i,b in enumerate(hist.breaks):
         breaks[i] = int(hist.breaks[i])
     densities = hist_msg.init("densities", len(hist.densities))
     for i,d in enumerate(hist.densities):
-        densities[i] = hist.densities[i]
+        densities[i] = unwrap_value(hist.densities[i])
     reprPoints = hist_msg.init("binReprPoints", len(hist.bin_repr_points))
     for i,r in enumerate(hist.bin_repr_points):
-        reprPoints[i] = hist.bin_repr_points[i]
+        reprPoints[i] = unwrap_value(hist.bin_repr_points[i])
     hist_msg.type = type2Enum.get(hist.type)
     hist_msg.metaType = metaType2Enum.get(hist.meta_type)
+    # TODO: Check that scope is defined over a single variable
+    hist_msg.scope = unwrap_value(hist.scope[0])
+    # Construct surrounding node message.
     node = spflow_capnp.Node.new_message()
-    scope = node.init("scope", len(hist.scope))
-    for i, v in enumerate(hist.scope):
-        scope[i] = v
     node.hist = hist_msg
     node.rootNode = is_rootNode
     node.id = hist.id
@@ -124,21 +131,25 @@ def binary_deserialize_histogram(node, node_map):
     reprPoints = node.hist.binReprPoints
     type = enum2Type.get(node.hist.type)
     metaType = enum2MetaType.get(node.hist.metaType)
-    hist = Histogram(breaks=breaks, densities=densities, bin_repr_points=reprPoints, scope=node.scope[0],
+    hist = Histogram(breaks=breaks, densities=densities, bin_repr_points=reprPoints, scope=node.hist.scope,
                      type_=type, meta_type=metaType)
     hist.id = node.id
     return hist
 
 
-def binary_serialize(node, file, is_rootNode = True):
-    if isinstance(node, Product):
-        binary_serialize_product(node, file, is_rootNode)
-    elif isinstance(node, Sum):
-        binary_serialize_sum(node, file, is_rootNode)
-    elif isinstance(node, Histogram):
-        binary_serialize_histogram(node, file, is_rootNode)
-    elif isinstance(node,Gaussian):
-        binary_serialize_gaussian(node, file, is_rootNode)
+def binary_serialize(node, file, is_rootNode, visited_nodes):
+    if node.id not in visited_nodes:
+        if isinstance(node, Product):
+            binary_serialize_product(node, file, is_rootNode, visited_nodes)
+        elif isinstance(node, Sum):
+            binary_serialize_sum(node, file, is_rootNode, visited_nodes)
+        elif isinstance(node, Histogram):
+            binary_serialize_histogram(node, file, is_rootNode, visited_nodes)
+        elif isinstance(node,Gaussian):
+            binary_serialize_gaussian(node, file, is_rootNode, visited_nodes)
+        # TODO Throw error.
+        visited_nodes.add(node.id)
+
 
 
 def binary_deserialize(file):
@@ -155,17 +166,25 @@ def binary_deserialize(file):
             deserialized = binary_deserialize_histogram(node, node_map)
         elif which == "gaussian":
             deserialized = binary_deserialize_gaussian(node, node_map)
+        # TODO Throw error.
         node_map[node.id] = deserialized
         if node.rootNode:
             nodes.append(deserialized)
     return nodes
 
-def binary_serialize_to_file(spn, fileName):
-    with open(fileName, "w+b") as outFile:
-        binary_serialize(spn, outFile)
+def binary_serialize_to_file(rootNodes, fileName):
+    # Buffering write, buffers up to 100 MiB.
+    with open(fileName, "w+b", buffering=100*(2**20)) as outFile:
+        numNodes = 0
+        for spn in rootNodes:
+            visited = set()
+            binary_serialize(spn, outFile, True, visited)
+            numNodes += len(visited)
+        print(f"Serialized {numNodes} nodes to {fileName}")
 
 def binary_deserialize_from_file(fileName):
     with open(fileName, "rb") as inFile:
+        # TODO Rebuild scopes, check validity
         return binary_deserialize(inFile)
 
 if __name__ == "__main__":
@@ -184,7 +203,7 @@ if __name__ == "__main__":
 
     plot_spn(spn, "before.png")
 
-    binary_serialize_to_file(spn, "test.bin")
+    binary_serialize_to_file([spn], "test.bin")
 
     deserialized = binary_deserialize_from_file("test.bin")
 
