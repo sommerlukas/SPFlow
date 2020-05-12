@@ -4,6 +4,7 @@ import numpy as np
 import capnp
 
 from spn.io.Graphics import plot_spn
+from spn.algorithms.Validity import is_valid
 from spn.structure.Base import Product, Sum, rebuild_scopes_bottom_up, assign_ids
 from spn.structure.StatisticalTypes import Type, MetaType
 from spn.structure.leaves.histogram.Histograms import Histogram
@@ -50,7 +51,8 @@ def binary_deserialize_product(node, node_map):
     child_ids = node.product.children
     # Resolve references to child nodes by ID.
     children = [node_map.get(id) for id in child_ids]
-    # TODO: Check all childs have been resolved.
+    # Check all childs have been resolved.
+    assert None not in children, "Child node ID could not be resolved"
     product = Product(children = children)
     product.id = node.id
     return product
@@ -66,7 +68,7 @@ def binary_serialize_sum(sum, file, is_rootNode, visited_nodes):
         children[i] = child.id
     weights = sum_msg.init("weights", len(sum.weights))
     for i, w in enumerate(sum.weights):
-        weights[i] = w
+        weights[i] = unwrap_value(w)
     # Construct surrounding node message
     node = spflow_capnp.Node.new_message()
     node.id = sum.id
@@ -78,7 +80,8 @@ def binary_deserialize_sum(node, node_map):
     child_ids = node.sum.children
     # Resolve references to child nodes by ID.
     children = [node_map.get(id) for id in child_ids]
-    # TODO: Check all childs have been resolved.
+    # Check all childs have been resolved.
+    assert None not in children, "Child node ID could not be resolved"
     sum = Sum(children = children, weights=node.sum.weights)
     sum.id = node.id
     return sum
@@ -88,7 +91,8 @@ def binary_serialize_gaussian(gauss, file, is_rootNode, visited_nodes):
     gauss_msg = spflow_capnp.GaussianLeaf.new_message()
     gauss_msg.mean = unwrap_value(gauss.mean)
     gauss_msg.stddev = unwrap_value(gauss.stdev)
-    # TODO: Check that scope is defined over a single variable
+    # Check that scope is defined over a single variable
+    assert len(gauss.scope) == 1, "Expecting Gauss to be univariate"
     gauss_msg.scope = unwrap_value(gauss.scope[0])
     # Construct surrounding node message.
     node = spflow_capnp.Node.new_message()
@@ -116,7 +120,8 @@ def binary_serialize_histogram(hist, file, is_rootNode, visited_nodes):
         reprPoints[i] = unwrap_value(hist.bin_repr_points[i])
     hist_msg.type = type2Enum.get(hist.type)
     hist_msg.metaType = metaType2Enum.get(hist.meta_type)
-    # TODO: Check that scope is defined over a single variable
+    # Check that scope is defined over a single variable
+    assert len(hist.scope) == 1, "Expecting Gauss to be univariate"
     hist_msg.scope = unwrap_value(hist.scope[0])
     # Construct surrounding node message.
     node = spflow_capnp.Node.new_message()
@@ -147,7 +152,8 @@ def binary_serialize(node, file, is_rootNode, visited_nodes):
             binary_serialize_histogram(node, file, is_rootNode, visited_nodes)
         elif isinstance(node,Gaussian):
             binary_serialize_gaussian(node, file, is_rootNode, visited_nodes)
-        # TODO Throw error.
+        else:
+            raise NotImplementedError(f"No serialization defined for node {node}")
         visited_nodes.add(node.id)
 
 
@@ -166,7 +172,8 @@ def binary_deserialize(file):
             deserialized = binary_deserialize_histogram(node, node_map)
         elif which == "gaussian":
             deserialized = binary_deserialize_gaussian(node, node_map)
-        # TODO Throw error.
+        else:
+            raise NotImplementedError(f"No deserialization defined for {which}")
         node_map[node.id] = deserialized
         if node.rootNode:
             nodes.append(deserialized)
@@ -177,6 +184,7 @@ def binary_serialize_to_file(rootNodes, fileName):
     with open(fileName, "w+b", buffering=100*(2**20)) as outFile:
         numNodes = 0
         for spn in rootNodes:
+            assert is_valid(spn), "SPN invalid before serialization"
             visited = set()
             binary_serialize(spn, outFile, True, visited)
             numNodes += len(visited)
@@ -184,8 +192,11 @@ def binary_serialize_to_file(rootNodes, fileName):
 
 def binary_deserialize_from_file(fileName):
     with open(fileName, "rb") as inFile:
-        # TODO Rebuild scopes, check validity
-        return binary_deserialize(inFile)
+        rootNodes = binary_deserialize(inFile)
+        for root in rootNodes:
+            rebuild_scopes_bottom_up(root)
+            assert is_valid(root), "SPN invalid after deserialization"
+        return rootNodes
 
 if __name__ == "__main__":
 
