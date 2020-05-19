@@ -1,14 +1,14 @@
-from observations import mnist
-from observations import fashion_mnist
-import tensorflow as tf
 import numpy as np
-import spn.experiments.RandomSPNs.RAT_SPN_v2 as RAT_SPN
-import spn.experiments.RandomSPNs.region_graph as region_graph
-from spn.structure.Base import Leaf
+import tensorflow as tf
+import tensorflow_datasets as tfds
 
 import spn.algorithms.Inference as inference
-import spn.io.Graphics as graphics
+import spn.experiments.RandomSPNs.RAT_SPN_v2 as RAT_SPN
+import spn.experiments.RandomSPNs.region_graph as region_graph
 from spn.experiments.RandomSPNs.RAT_SPN_v2 import compute_performance
+import datetime
+
+from spn.structure.Base import Leaf, Sum, Product
 
 
 def one_hot(vector):
@@ -17,14 +17,39 @@ def one_hot(vector):
     return result
 
 
-def load_database(name):
-    print("Loading database", name, "...")
-    if name == "mnist":
-        (train_im, train_lab), (test_im, test_lab) = mnist("data/mnist")
-    elif name == "fashion_mnist":
-        (train_im, train_lab), (test_im, test_lab) = fashion_mnist("data/mnist")
+def load_dataset(name):
+    print("Loading dataset {}...".format(name))
+
+    ds, info = tfds.load(name, split="train", as_supervised=True, shuffle_files=True, with_info=True)
+    # print(info)
+    ds_numpy = tfds.as_numpy(ds)
+    train_im = []
+    train_lab = []
+    for ex in ds_numpy:
+        train_im.append(ex[0].flatten())
+        train_lab.append(ex[1])
+    train_im = np.array(train_im)
+    train_lab = np.array(train_lab)
+
+    if name == "eurosat":
+        # split the training set into training and test sets
+        split_index = int(train_im.shape[0] * 0.9)
+        test_im = train_im[split_index:]
+        train_im = train_im[:split_index]
+        test_lab = train_lab[split_index:]
+        train_lab = train_lab[:split_index]
+
     else:
-        print("Database not found")
+        ds = tfds.load(name, split="test", as_supervised=True, shuffle_files=True)
+        ds_numpy = tfds.as_numpy(ds)
+        test_im = []
+        test_lab = []
+        for ex in ds_numpy:
+            test_im.append(ex[0].flatten())
+            test_lab.append(ex[1])
+
+        test_im = np.array(test_im)
+        test_lab = np.array(test_lab)
 
     ####### Data Standardization #######
     train_im_mean = np.mean(train_im, 0)
@@ -39,7 +64,8 @@ def load_database(name):
 
     # train_im /= 255.0
     # test_im /= 255.0
-    return (train_im, train_lab), (test_im, test_lab)
+    return (train_im, train_lab), (test_im, test_lab), info.features['image'].shape, int(
+        info.features['label'].num_classes)
 
 
 def train_spn(spn, train_im, train_lab=None, num_epochs=50, batch_size=100, sess=tf.compat.v1.Session()):
@@ -61,7 +87,14 @@ def train_spn(spn, train_im, train_lab=None, num_epochs=50, batch_size=100, sess
     # sess.run(tf.variables_initializer(optimizer.variables()))
     sess.run(tf.compat.v1.global_variables_initializer())
 
+    ep_str_title = "| Epoch | Accuracy | Loss | Time elapsed |"
+    line = "------------------------------------------"
+
+    print(line)
+    print(ep_str_title)
+    print(line)
     for i in range(num_epochs):
+        starting_time = datetime.datetime.now()
         num_correct = 0
         for j in range(batches_per_epoch):
             im_batch = train_im[j * batch_size: (j + 1) * batch_size, :]
@@ -77,7 +110,20 @@ def train_spn(spn, train_im, train_lab=None, num_epochs=50, batch_size=100, sess
             num_correct += num_correct_batch
 
         acc = num_correct / (batch_size * batches_per_epoch)
-        print("Epoch:", (i + 1), "Accuracy:", acc, "Loss:", cur_loss)
+        finish_time = datetime.datetime.now()
+        diff_time = finish_time - starting_time
+        diff_time = seconds_to_string(diff_time.seconds)
+        epoch = i + 1
+        ep_str = "| {:5d} | {:6.2f} % | {:4.2f} | {:>12s} |".format(epoch, acc * 100, cur_loss, diff_time)
+
+        print(ep_str)
+
+
+def seconds_to_string(s):
+    hours, remainder = divmod(s, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    result = '{:02d}:{:02d}:{:02d}'.format(int(hours), int(minutes), int(seconds))
+    return result
 
 
 def softmax(x, axis=0):
@@ -97,6 +143,24 @@ def get_dists(output_nodes):
     return result
 
 
+def get_node_structure(nodes, structure_as_list=[]):
+    str = ""
+    node = nodes[0]
+    if isinstance(node, Sum):
+        str += "[ + {} children ]".format(len(node.children))
+        get_node_structure(node.children, structure_as_list)
+    elif isinstance(node, Product):
+        str += "[ * {} children ]".format(len(node.children))
+        if isinstance(node.children[0], Leaf):
+            str += " Children are Leaf nodes"
+        else:
+            get_node_structure(node.children, structure_as_list)
+
+    structure_as_list.append(str)
+
+    return structure_as_list
+
+
 def draw_histogram(gaussian_node):
     mean = gaussian_node.mean
     stdev = gaussian_node.stdev
@@ -106,7 +170,7 @@ def draw_histogram(gaussian_node):
 
     fig = plt.figure()
     ax = fig.add_subplot(1, 1, 1)
-    plt.text(0, .025, r'$\mu=' + str(mean) + ',\ \sigma=' + str(stdev) + '$')
+    plt.text(0, .025, r'$\mu=' + node_structure(mean) + ',\ \sigma=' + node_structure(stdev) + '$')
     ax.plot(x, f)
     ax.set_title(gaussian_node)
 
@@ -115,7 +179,17 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
     tf.compat.v1.disable_eager_execution()
-    rg = region_graph.RegionGraph(range(28 * 28))
+
+    # select a dataset, either mnist, emnist, fashion_mnist, eurosat and kmnist
+    dataset_name = "emnist"
+
+    (train_im, train_labels), (test_im, test_labels), sample_shape, number_of_classes = load_dataset(dataset_name)
+
+    size = 1
+    for dim in sample_shape:
+        size *= dim
+    rg = region_graph.RegionGraph(range(size))
+
     # rg = region_graph.RegionGraph(range(3 * 3))
     for _ in range(0, 5):
         rg.random_split(2, 3)
@@ -124,13 +198,10 @@ if __name__ == "__main__":
     args.normalized_sums = True
     args.num_sums = 20
     args.num_univ_distros = 20
-    spn = RAT_SPN.RatSpn(10, region_graph=rg, name="obj-spn", args=args)
-    print("num_params", spn.num_params())
+    spn = RAT_SPN.RatSpn(number_of_classes, region_graph=rg, name="obj-spn", args=args)
+    print("Number of parameters in the model:", spn.num_params())
 
     sess = tf.compat.v1.Session()
-    # sess.run(tf.compat.v1.global_variables_initializer())
-
-    (train_im, train_labels), (test_im, test_labels) = load_database("fashion_mnist")
 
     # Split the Training set into Training and Validation!
     split_index = int(train_im.shape[0] * 0.9)
@@ -141,24 +212,29 @@ if __name__ == "__main__":
     valid_set_x = train_im[split_index:]
     valid_set_y = train_labels[split_index:]
 
-    train_spn(spn, train_set_x, train_set_y, num_epochs=200, sess=sess, batch_size=100)
+    train_spn(spn, train_set_x, train_set_y, num_epochs=15, sess=sess, batch_size=100)
 
-    # dummy_input = np.random.normal(0.0, 1.2, [10, 9])
     dummy_input = test_im
-    # print(dummy_input.shape)
-    # for im in dummy_input:
-    #    plt.imshow(im.reshape(28,28))
-    #    plt.show()
     input_ph = tf.compat.v1.placeholder(tf.float32, [None] + list(dummy_input.shape[1:]))
     output_tensor = spn.forward(input_ph)
     tf_output = sess.run(output_tensor, feed_dict={input_ph: dummy_input})
 
     output_nodes = spn.get_simple_spn(sess)
+
+    print("---------------------------------------------------")
+    print("MODEL STRUCTURE: ")
+    print("Output nodes: ", len(output_nodes))
+    for node_structure in reversed(get_node_structure([output_nodes[0]])):
+        print(node_structure)
+    print("---------------------------------------------------")
+
     simple_output = []
     for node in output_nodes:
         simple_output.append(inference.log_likelihood(node, dummy_input)[:, 0])
+
     # graphics.plot_spn2(output_nodes[0])
     # graphics.plot_spn_to_svg(output_nodes[0])
+
     simple_output = np.stack(simple_output, axis=-1)
     # print(tf_output, simple_output)
     simple_output = softmax(simple_output, axis=1)
@@ -170,4 +246,4 @@ if __name__ == "__main__":
     print("Average relative error", np.average(relative_error))
 
     accuracy = compute_performance(sess=sess, data_x=test_im, data_labels=test_labels, batch_size=100, spn=spn)
-    print("Accuracy:", accuracy)
+    print("Accuracy with test-set:", accuracy)

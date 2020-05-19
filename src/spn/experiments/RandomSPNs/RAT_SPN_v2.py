@@ -18,7 +18,7 @@ def add_to_map(given_map, key, item):
 
 def variable_with_weight_decay(name, shape, stddev, wd, mean=0.0, values=None):
     if values is None:
-        initializer = tf.compat.v1.truncated_normal_initializer(mean=mean, stddev=stddev, dtype=tf.float32)
+        initializer = tf.compat.v1.truncated_normal_initializer(mean=mean, stddev=stddev)
     else:
         initializer = tf.compat.v1.constant_initializer(values)
     """Get a TF variable with optional l2-loss attached."""
