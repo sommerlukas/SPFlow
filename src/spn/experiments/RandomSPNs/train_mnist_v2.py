@@ -61,18 +61,21 @@ def load_dataset(name):
     # Mean of the database is now zero and standard deviation is 1
     print("Training set shape:", train_im.shape)
     print("Test set shape:", test_im.shape)
-
+    sample_shape = info.features['image'].shape
+    number_of_classes = int(info.features['label'].num_classes)
+    print("Sample shape:", info.features['image'].shape)
+    print("Number of classes:", number_of_classes)
     # train_im /= 255.0
     # test_im /= 255.0
-    return (train_im, train_lab), (test_im, test_lab), info.features['image'].shape, int(
-        info.features['label'].num_classes)
+    return (train_im, train_lab), (test_im, test_lab), sample_shape, number_of_classes
 
 
-def train_spn(spn, train_im, train_lab=None, num_epochs=50, batch_size=100, sess=tf.compat.v1.Session()):
+def train_spn(spn, train_im, train_lab, val_im, val_lab, num_epochs=50, batch_size=100, sess=tf.compat.v1.Session()):
     input_ph = tf.compat.v1.placeholder(tf.float32, [batch_size, train_im.shape[1]])
     label_ph = tf.compat.v1.placeholder(tf.int32, [batch_size])
     marginalized = tf.zeros_like(input_ph)
     spn_output = spn.forward(input_ph, marginalized)
+
     if train_lab is not None:
         disc_loss = tf.reduce_mean(
             input_tensor=tf.nn.sparse_softmax_cross_entropy_with_logits(labels=label_ph, logits=spn_output))
@@ -83,12 +86,13 @@ def train_spn(spn, train_im, train_lab=None, num_epochs=50, batch_size=100, sess
     optimizer = tf.compat.v1.train.AdamOptimizer()
     train_op = optimizer.minimize(loss)
     batches_per_epoch = train_im.shape[0] // batch_size
+    valid_batches_per_epoch = val_im.shape[0] // batch_size
 
     # sess.run(tf.variables_initializer(optimizer.variables()))
     sess.run(tf.compat.v1.global_variables_initializer())
 
-    ep_str_title = "| Epoch | Accuracy | Loss | Time elapsed |"
-    line = "------------------------------------------"
+    ep_str_title = "| Epoch | Train Accuracy | Validation Accuracy | Loss | Time elapsed |"
+    line = "----------------------------------------------------------------------"
 
     print(line)
     print(ep_str_title)
@@ -109,14 +113,28 @@ def train_spn(spn, train_im, train_lab=None, num_epochs=50, batch_size=100, sess
             num_correct_batch = np.sum(max_idx == label_batch)
             num_correct += num_correct_batch
 
-        acc = num_correct / (batch_size * batches_per_epoch)
+        valid_num_correct = 0
+
+        for k in range(valid_batches_per_epoch):
+            valid_im_batch = val_im[k * batch_size: (k + 1) * batch_size, :]
+            valid_lab_batch = val_lab[k * batch_size: (k + 1) * batch_size]
+            valid_spn_outputs = sess.run(spn_output,
+                                         feed_dict={input_ph: valid_im_batch, label_ph: valid_lab_batch})
+            valid_max_idx = np.argmax(valid_spn_outputs, axis=1)
+
+            valid_num_correct_batch = np.sum(valid_max_idx == valid_lab_batch)
+            valid_num_correct += valid_num_correct_batch
+
+        train_acc = num_correct / (batch_size * batches_per_epoch)
+        valid_acc = valid_num_correct / (batch_size * valid_batches_per_epoch)
+
         finish_time = datetime.datetime.now()
         diff_time = finish_time - starting_time
         diff_time = seconds_to_string(diff_time.seconds)
         epoch = i + 1
-        ep_str = "| {:5d} | {:6.2f} % | {:4.2f} | {:>12s} |".format(epoch, acc * 100, cur_loss, diff_time)
-
+        ep_str = "| {:5d} | {:12.2f} % | {:17.2f} % | {:4.2f} | {:>12s} |".format(epoch, train_acc * 100, valid_acc * 100, cur_loss, diff_time)
         print(ep_str)
+    print(line)
 
 
 def seconds_to_string(s):
@@ -132,118 +150,51 @@ def softmax(x, axis=0):
     return e_x / e_x.sum(axis=axis, keepdims=True)
 
 
-def get_dists(output_nodes):
-    result = []
-    for node in output_nodes:
-        if isinstance(node, Leaf):
-            result.append(node)
-        else:
-            result = result + get_dists(node.children)
-
-    return result
-
-
-def get_node_structure(nodes, structure_as_list=[]):
-    str = ""
-    node = nodes[0]
-    if isinstance(node, Sum):
-        str += "[ + {} children ]".format(len(node.children))
-        get_node_structure(node.children, structure_as_list)
-    elif isinstance(node, Product):
-        str += "[ * {} children ]".format(len(node.children))
-        if isinstance(node.children[0], Leaf):
-            str += " Children are Leaf nodes"
-        else:
-            get_node_structure(node.children, structure_as_list)
-
-    structure_as_list.append(str)
-
-    return structure_as_list
-
-
-def draw_histogram(gaussian_node):
-    mean = gaussian_node.mean
-    stdev = gaussian_node.stdev
-    variance = stdev ** 2
-    x = np.linspace(mean - 5 * stdev, mean + 5 * stdev, 100)
-    f = np.exp(-np.square(x - mean) / 2 * variance) / (np.sqrt(2 * np.pi * variance))
-
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
-    plt.text(0, .025, r'$\mu=' + node_structure(mean) + ',\ \sigma=' + node_structure(stdev) + '$')
-    ax.plot(x, f)
-    ax.set_title(gaussian_node)
-
-
 if __name__ == "__main__":
-    import matplotlib.pyplot as plt
 
     tf.compat.v1.disable_eager_execution()
 
     # select a dataset, either mnist, emnist, fashion_mnist, eurosat and kmnist
-    dataset_name = "emnist"
+    tested_datasets = ["mnist", "emnist", "fashion_mnist", "eurosat", "kmnist"]
 
-    (train_im, train_labels), (test_im, test_labels), sample_shape, number_of_classes = load_dataset(dataset_name)
+    dataset_to_train = [tested_datasets[0]]
 
-    size = 1
-    for dim in sample_shape:
-        size *= dim
-    rg = region_graph.RegionGraph(range(size))
+    for d_name in dataset_to_train:
+        (train_im, train_labels), (test_im, test_labels), sample_shape, number_of_classes = load_dataset(d_name)
+        size = 1
+        for dim in sample_shape:
+            size *= dim
+        rg = region_graph.RegionGraph(range(size))
+        # rg = region_graph.RegionGraph(range(3 * 3))
 
-    # rg = region_graph.RegionGraph(range(3 * 3))
-    for _ in range(0, 5):
-        rg.random_split(2, 3)
+        for _ in range(0, 10):
+            rg.random_split(2, 3)
 
-    args = RAT_SPN.SpnArgs()
-    args.normalized_sums = True
-    args.num_sums = 20
-    args.num_univ_distros = 20
-    spn = RAT_SPN.RatSpn(number_of_classes, region_graph=rg, name="obj-spn", args=args)
-    print("Number of parameters in the model:", spn.num_params())
+        args = RAT_SPN.SpnArgs()
+        args.normalized_sums = True
+        args.num_sums = 20
+        args.num_univ_distros = 20
+        spn = RAT_SPN.RatSpn(number_of_classes, region_graph=rg, name="obj-spn", args=args)
+        print("Number of parameters in the model:", spn.num_params())
 
-    sess = tf.compat.v1.Session()
+        sess = tf.compat.v1.Session()
 
-    # Split the Training set into Training and Validation!
-    split_index = int(train_im.shape[0] * 0.9)
+        # Split the Training set into Training and Validation!
+        split_index = int(train_im.shape[0] * 0.9)
 
-    train_set_x = train_im[:split_index]  # images
-    train_set_y = train_labels[:split_index]  # labels
+        train_set_x = train_im[:split_index]  # images
+        train_set_y = train_labels[:split_index]  # labels
 
-    valid_set_x = train_im[split_index:]
-    valid_set_y = train_labels[split_index:]
+        valid_set_x = train_im[split_index:]
+        valid_set_y = train_labels[split_index:]
 
-    train_spn(spn, train_set_x, train_set_y, num_epochs=15, sess=sess, batch_size=100)
+        train_spn(spn, train_set_x, train_set_y, valid_set_x, valid_set_y, num_epochs=10, sess=sess, batch_size=100)
 
-    dummy_input = test_im
-    input_ph = tf.compat.v1.placeholder(tf.float32, [None] + list(dummy_input.shape[1:]))
-    output_tensor = spn.forward(input_ph)
-    tf_output = sess.run(output_tensor, feed_dict={input_ph: dummy_input})
+        print("---------------------------------------------------")
+        from spn.algorithms.Statistics import get_structure_stats
+        output_nodes = spn.get_simple_spn(sess)
+        print(get_structure_stats(output_nodes[0]))
+        print("---------------------------------------------------")
 
-    output_nodes = spn.get_simple_spn(sess)
-
-    print("---------------------------------------------------")
-    print("MODEL STRUCTURE: ")
-    print("Output nodes: ", len(output_nodes))
-    for node_structure in reversed(get_node_structure([output_nodes[0]])):
-        print(node_structure)
-    print("---------------------------------------------------")
-
-    simple_output = []
-    for node in output_nodes:
-        simple_output.append(inference.log_likelihood(node, dummy_input)[:, 0])
-
-    # graphics.plot_spn2(output_nodes[0])
-    # graphics.plot_spn_to_svg(output_nodes[0])
-
-    simple_output = np.stack(simple_output, axis=-1)
-    # print(tf_output, simple_output)
-    simple_output = softmax(simple_output, axis=1)
-    tf_output = softmax(tf_output, axis=1) + 1e-100
-    # print(tf_output, simple_output)
-    print(tf_output.shape)
-    print(simple_output.shape)
-    relative_error = np.abs(simple_output / tf_output - 1)
-    print("Average relative error", np.average(relative_error))
-
-    accuracy = compute_performance(sess=sess, data_x=test_im, data_labels=test_labels, batch_size=100, spn=spn)
-    print("Accuracy with test-set:", accuracy)
+        accuracy = compute_performance(sess=sess, data_x=test_im, data_labels=test_labels, batch_size=100, spn=spn) * 100
+        print("Accuracy with test-set: {:4.2f} %".format(accuracy))
