@@ -224,3 +224,6 @@ docs/api
 docs/_build
 docs/log.txt
 docs/cache
+
+# Data for training experiments
+/src/spn/experiments/RandomSPNs/data/
